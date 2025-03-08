@@ -7,6 +7,7 @@ import (
 	"runtime"
 
 	"github.com/drmaq/streamnotification/internal/config"
+	"github.com/drmaq/streamnotification/internal/errors"
 	"github.com/drmaq/streamnotification/internal/models"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -30,12 +31,12 @@ func NewDatabase(cfg *config.Config) (*Database, error) {
 	// Connect to database
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
-		return nil, err
+		return nil, errors.NewDatabaseError("Failed to open database connection", err)
 	}
 
 	// Check connection
 	if err := db.Ping(); err != nil {
-		return nil, err
+		return nil, errors.NewDatabaseError("Failed to connect to database", err)
 	}
 
 	return &Database{db: db}, nil
@@ -43,7 +44,11 @@ func NewDatabase(cfg *config.Config) (*Database, error) {
 
 // Close closes the database connection
 func (d *Database) Close() error {
-	return d.db.Close()
+	err := d.db.Close()
+	if err != nil {
+		return errors.NewDatabaseError("Failed to close database connection", err)
+	}
+	return nil
 }
 
 // Migrate runs database migrations
@@ -56,19 +61,19 @@ func (d *Database) Migrate() error {
 	// Create a new migrate instance
 	driver, err := postgres.WithInstance(d.db, &postgres.Config{})
 	if err != nil {
-		return err
+		return errors.NewDatabaseError("Failed to create migration driver", err)
 	}
 
 	// Create a new migrate instance
 	sourceURL := fmt.Sprintf("file://%s", migrationsPath)
 	m, err := migrate.NewWithDatabaseInstance(sourceURL, "postgres", driver)
 	if err != nil {
-		return err
+		return errors.NewDatabaseError("Failed to create migration instance", err)
 	}
 
 	// Run migrations
 	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		return err
+		return errors.NewDatabaseError("Failed to run migrations", err)
 	}
 
 	return nil
@@ -78,7 +83,7 @@ func (d *Database) Migrate() error {
 func (d *Database) GetStreamers() ([]models.Streamer, error) {
 	rows, err := d.db.Query("SELECT id, username, display_name, is_live, last_stream_start, last_notification_sent FROM streamers")
 	if err != nil {
-		return nil, err
+		return nil, errors.NewDatabaseError("Failed to query streamers", err)
 	}
 	defer rows.Close()
 
@@ -86,9 +91,13 @@ func (d *Database) GetStreamers() ([]models.Streamer, error) {
 	for rows.Next() {
 		var s models.Streamer
 		if err := rows.Scan(&s.ID, &s.Username, &s.DisplayName, &s.IsLive, &s.LastStreamStart, &s.LastNotificationSent); err != nil {
-			return nil, err
+			return nil, errors.NewDatabaseError("Failed to scan streamer row", err)
 		}
 		streamers = append(streamers, s)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, errors.NewDatabaseError("Error iterating streamer rows", err)
 	}
 
 	return streamers, nil
@@ -102,7 +111,7 @@ func (d *Database) AddStreamer(streamer *models.Streamer) error {
 		RETURNING id
 	`
 
-	return d.db.QueryRow(
+	err := d.db.QueryRow(
 		query,
 		streamer.Username,
 		streamer.DisplayName,
@@ -110,6 +119,12 @@ func (d *Database) AddStreamer(streamer *models.Streamer) error {
 		streamer.LastStreamStart,
 		streamer.LastNotificationSent,
 	).Scan(&streamer.ID)
+
+	if err != nil {
+		return errors.NewDatabaseError("Failed to add streamer", err)
+	}
+
+	return nil
 }
 
 // UpdateStreamer updates a streamer in the database
@@ -120,7 +135,7 @@ func (d *Database) UpdateStreamer(streamer *models.Streamer) error {
 		WHERE id = $6
 	`
 
-	_, err := d.db.Exec(
+	result, err := d.db.Exec(
 		query,
 		streamer.Username,
 		streamer.DisplayName,
@@ -130,20 +145,46 @@ func (d *Database) UpdateStreamer(streamer *models.Streamer) error {
 		streamer.ID,
 	)
 
-	return err
+	if err != nil {
+		return errors.NewDatabaseError("Failed to update streamer", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return errors.NewDatabaseError("Failed to get rows affected", err)
+	}
+
+	if rowsAffected == 0 {
+		return errors.NewNotFoundError("Streamer not found", nil)
+	}
+
+	return nil
 }
 
 // DeleteStreamer deletes a streamer from the database
 func (d *Database) DeleteStreamer(id int) error {
-	_, err := d.db.Exec("DELETE FROM streamers WHERE id = $1", id)
-	return err
+	result, err := d.db.Exec("DELETE FROM streamers WHERE id = $1", id)
+	if err != nil {
+		return errors.NewDatabaseError("Failed to delete streamer", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return errors.NewDatabaseError("Failed to get rows affected", err)
+	}
+
+	if rowsAffected == 0 {
+		return errors.NewNotFoundError("Streamer not found", nil)
+	}
+
+	return nil
 }
 
 // GetNotificationSettings returns all notification settings from the database
 func (d *Database) GetNotificationSettings() ([]models.NotificationSetting, error) {
 	rows, err := d.db.Query("SELECT id, type, destination, enabled FROM notification_settings")
 	if err != nil {
-		return nil, err
+		return nil, errors.NewDatabaseError("Failed to query notification settings", err)
 	}
 	defer rows.Close()
 
@@ -151,9 +192,13 @@ func (d *Database) GetNotificationSettings() ([]models.NotificationSetting, erro
 	for rows.Next() {
 		var s models.NotificationSetting
 		if err := rows.Scan(&s.ID, &s.Type, &s.Destination, &s.Enabled); err != nil {
-			return nil, err
+			return nil, errors.NewDatabaseError("Failed to scan notification setting row", err)
 		}
 		settings = append(settings, s)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, errors.NewDatabaseError("Error iterating notification setting rows", err)
 	}
 
 	return settings, nil
@@ -167,12 +212,18 @@ func (d *Database) AddNotificationSetting(setting *models.NotificationSetting) e
 		RETURNING id
 	`
 
-	return d.db.QueryRow(
+	err := d.db.QueryRow(
 		query,
 		setting.Type,
 		setting.Destination,
 		setting.Enabled,
 	).Scan(&setting.ID)
+
+	if err != nil {
+		return errors.NewDatabaseError("Failed to add notification setting", err)
+	}
+
+	return nil
 }
 
 // UpdateNotificationSetting updates a notification setting in the database
@@ -183,7 +234,7 @@ func (d *Database) UpdateNotificationSetting(setting *models.NotificationSetting
 		WHERE id = $4
 	`
 
-	_, err := d.db.Exec(
+	result, err := d.db.Exec(
 		query,
 		setting.Type,
 		setting.Destination,
@@ -191,11 +242,37 @@ func (d *Database) UpdateNotificationSetting(setting *models.NotificationSetting
 		setting.ID,
 	)
 
-	return err
+	if err != nil {
+		return errors.NewDatabaseError("Failed to update notification setting", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return errors.NewDatabaseError("Failed to get rows affected", err)
+	}
+
+	if rowsAffected == 0 {
+		return errors.NewNotFoundError("Notification setting not found", nil)
+	}
+
+	return nil
 }
 
 // DeleteNotificationSetting deletes a notification setting from the database
 func (d *Database) DeleteNotificationSetting(id int) error {
-	_, err := d.db.Exec("DELETE FROM notification_settings WHERE id = $1", id)
-	return err
+	result, err := d.db.Exec("DELETE FROM notification_settings WHERE id = $1", id)
+	if err != nil {
+		return errors.NewDatabaseError("Failed to delete notification setting", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return errors.NewDatabaseError("Failed to get rows affected", err)
+	}
+
+	if rowsAffected == 0 {
+		return errors.NewNotFoundError("Notification setting not found", nil)
+	}
+
+	return nil
 }

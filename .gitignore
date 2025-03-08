@@ -1,0 +1,72 @@
+# Go specific ignores
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+
+# Environment and configuration files
+.env
+*.env
+!.env.example
+
+# Dependency directories
+vendor/
+
+# Build and binary directories
+bin/
+dist/
+
+# Database files
+*.db
+*.sqlite
+
+# Log files
+*.log
+logs/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+postgres_data/
+
+# Temporary files
+tmp/
+temp/
+
+# Compiled Object files, Static and Dynamic libs
+*.o
+*.a
+
+# Debug files
+debug
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+*.prof
+
+# Credentials and secrets
+*credentials*
+*secret*
+*token*
+*key*
+!go.sum
+
+# Local configuration files that might contain sensitive data
+config.local.yaml
+config.dev.yaml

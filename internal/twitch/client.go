@@ -10,6 +10,7 @@ import (
 
 	"github.com/drmaq/streamnotification/internal/config"
 	"github.com/drmaq/streamnotification/internal/db"
+	"github.com/drmaq/streamnotification/internal/errors"
 	"github.com/drmaq/streamnotification/internal/logger"
 	"github.com/drmaq/streamnotification/internal/models"
 )
@@ -42,7 +43,7 @@ func NewClient(cfg *config.Config, logger *logger.Logger) (*Client, error) {
 
 	// Get initial access token
 	if err := client.refreshAccessToken(); err != nil {
-		return nil, fmt.Errorf("failed to get access token: %w", err)
+		return nil, errors.NewAPIError("Failed to get access token", err)
 	}
 
 	return client, nil
@@ -64,15 +65,23 @@ func (c *Client) refreshAccessToken() error {
 
 	req, err := http.NewRequest("POST", url, nil)
 	if err != nil {
-		return err
+		return errors.NewAPIError("Failed to create auth request", err)
 	}
 
 	// Send request
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		return errors.NewAPIError("Failed to send auth request", err)
 	}
 	defer resp.Body.Close()
+
+	// Check response status
+	if resp.StatusCode != http.StatusOK {
+		return errors.NewAPIError(
+			fmt.Sprintf("Twitch auth failed with status %d", resp.StatusCode),
+			fmt.Errorf("unexpected status code: %d", resp.StatusCode),
+		)
+	}
 
 	// Parse response
 	var result struct {
@@ -81,7 +90,7 @@ func (c *Client) refreshAccessToken() error {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return err
+		return errors.NewAPIError("Failed to parse auth response", err)
 	}
 
 	// Update token
@@ -95,14 +104,14 @@ func (c *Client) refreshAccessToken() error {
 func (c *Client) getAuthenticatedRequest(method, endpoint string, body interface{}) (*http.Request, error) {
 	// Refresh token if needed
 	if err := c.refreshAccessToken(); err != nil {
-		return nil, err
+		return nil, errors.NewAPIError("Failed to refresh access token", err)
 	}
 
 	// Create request
 	url := twitchAPIBaseURL + endpoint
 	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, errors.NewAPIError("Failed to create API request", err)
 	}
 
 	// Add headers
@@ -114,19 +123,32 @@ func (c *Client) getAuthenticatedRequest(method, endpoint string, body interface
 
 // GetStreamerInfo gets information about a Twitch streamer
 func (c *Client) GetStreamerInfo(username string) (*models.Streamer, error) {
+	// Validate input
+	if username == "" {
+		return nil, errors.NewValidationError("Username cannot be empty", nil)
+	}
+
 	// Create request
 	endpoint := fmt.Sprintf("/users?login=%s", username)
 	req, err := c.getAuthenticatedRequest("GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, err // Error already wrapped
 	}
 
 	// Send request
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, errors.NewAPIError("Failed to send request to Twitch API", err)
 	}
 	defer resp.Body.Close()
+
+	// Check response status
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.NewAPIError(
+			fmt.Sprintf("Twitch API request failed with status %d", resp.StatusCode),
+			fmt.Errorf("unexpected status code: %d", resp.StatusCode),
+		)
+	}
 
 	// Parse response
 	var result struct {
@@ -138,12 +160,12 @@ func (c *Client) GetStreamerInfo(username string) (*models.Streamer, error) {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, errors.NewAPIError("Failed to parse Twitch API response", err)
 	}
 
 	// Check if user exists
 	if len(result.Data) == 0 {
-		return nil, fmt.Errorf("streamer not found: %s", username)
+		return nil, errors.NewNotFoundError(fmt.Sprintf("Streamer not found: %s", username), nil)
 	}
 
 	// Create streamer
@@ -175,15 +197,23 @@ func (c *Client) GetStreamStatus(usernames []string) (map[string]*models.StreamE
 	// Create request
 	req, err := c.getAuthenticatedRequest("GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, err // Error already wrapped
 	}
 
 	// Send request
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, errors.NewAPIError("Failed to send request to Twitch API", err)
 	}
 	defer resp.Body.Close()
+
+	// Check response status
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.NewAPIError(
+			fmt.Sprintf("Twitch API request failed with status %d", resp.StatusCode),
+			fmt.Errorf("unexpected status code: %d", resp.StatusCode),
+		)
+	}
 
 	// Parse response
 	var result struct {
@@ -202,7 +232,7 @@ func (c *Client) GetStreamStatus(usernames []string) (map[string]*models.StreamE
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, errors.NewAPIError("Failed to parse Twitch API response", err)
 	}
 
 	// Create map of live streamers
@@ -225,9 +255,9 @@ func (c *Client) GetStreamStatus(usernames []string) (map[string]*models.StreamE
 	return liveStreamers, nil
 }
 
-// StartMonitoring starts monitoring Twitch streamers for live status changes
+// StartMonitoring starts monitoring streamers for live status changes
 func (c *Client) StartMonitoring(ctx context.Context, database *db.Database) {
-	c.logger.Info("Starting Twitch stream monitoring")
+	c.logger.Info("Starting Twitch stream monitor")
 
 	ticker := time.NewTicker(monitorInterval)
 	defer ticker.Stop()
@@ -235,7 +265,7 @@ func (c *Client) StartMonitoring(ctx context.Context, database *db.Database) {
 	for {
 		select {
 		case <-ctx.Done():
-			c.logger.Info("Stopping Twitch stream monitoring")
+			c.logger.Info("Stopping Twitch stream monitor")
 			return
 		case <-ticker.C:
 			if err := c.checkStreamers(database); err != nil {
@@ -245,68 +275,62 @@ func (c *Client) StartMonitoring(ctx context.Context, database *db.Database) {
 	}
 }
 
-// checkStreamers checks the status of all monitored streamers
+// checkStreamers checks the live status of all streamers
 func (c *Client) checkStreamers(database *db.Database) error {
 	// Get all streamers from database
 	streamers, err := database.GetStreamers()
 	if err != nil {
-		return err
+		return errors.NewInternalError("Failed to get streamers from database", err)
 	}
 
+	// If no streamers, nothing to do
 	if len(streamers) == 0 {
 		return nil
 	}
 
 	// Get usernames
 	usernames := make([]string, len(streamers))
-	streamerMap := make(map[string]*models.Streamer)
+	usernameToID := make(map[string]int)
 	for i, streamer := range streamers {
 		usernames[i] = streamer.Username
-		streamerMap[streamer.Username] = &streamers[i]
+		usernameToID[streamer.Username] = streamer.ID
 	}
 
-	// Check stream status
+	// Get live status
 	liveStreamers, err := c.GetStreamStatus(usernames)
 	if err != nil {
-		return err
+		return errors.NewAPIError("Failed to get stream status", err)
 	}
 
 	// Update streamers
-	for username, streamer := range streamerMap {
+	for i := range streamers {
 		// Check if streamer is live
-		liveEvent, isLive := liveStreamers[username]
+		liveEvent, isLive := liveStreamers[streamers[i].Username]
 
-		// Streamer was offline, now online
-		if !streamer.IsLive && isLive {
-			c.logger.Info("Streamer %s is now live: %s", streamer.DisplayName, liveEvent.StreamTitle)
-			
-			// Update streamer
-			streamer.IsLive = true
-			now := time.Now()
-			streamer.LastStreamStart = &now
-			streamer.LastNotificationSent = &now
+		// If status changed, update streamer
+		if isLive != streamers[i].IsLive {
+			oldStatus := streamers[i].IsLive
+			streamers[i].IsLive = isLive
 
-			// Update in database
-			if err := database.UpdateStreamer(streamer); err != nil {
-				c.logger.Error("Failed to update streamer %s: %v", streamer.Username, err)
-				continue
+			// If went live, update last stream start and send notification
+			if isLive && !oldStatus {
+				streamers[i].LastStreamStart = &liveEvent.StartedAt
+				streamers[i].LastNotificationSent = nil
+
+				// Send notification
+				c.logger.Info("%s went live playing %s: %s", 
+					streamers[i].DisplayName, liveEvent.GameName, liveEvent.StreamTitle)
+				
+				// TODO: Send notifications to Discord and Twitter
+				// This would be handled by notification services
+			} else if !isLive && oldStatus {
+				// Went offline
+				c.logger.Info("%s went offline", streamers[i].DisplayName)
 			}
 
-			// Send notifications (this would be handled by notification services)
-			c.logger.Info("Sending notifications for %s going live", streamer.DisplayName)
-			
-			// TODO: Send notifications to Discord and Twitter
-			
-		} else if streamer.IsLive && !isLive {
-			// Streamer was online, now offline
-			c.logger.Info("Streamer %s is now offline", streamer.DisplayName)
-			
-			// Update streamer
-			streamer.IsLive = false
-			
-			// Update in database
-			if err := database.UpdateStreamer(streamer); err != nil {
-				c.logger.Error("Failed to update streamer %s: %v", streamer.Username, err)
+			// Update streamer in database
+			if err := database.UpdateStreamer(&streamers[i]); err != nil {
+				return errors.NewInternalError("Failed to update streamer in database", err)
 			}
 		}
 	}
