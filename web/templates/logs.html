@@ -1,0 +1,194 @@
+{{define "content"}}
+<div class="row">
+    <div class="col-md-12">
+        <h1 class="mb-4">System Logs</h1>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">Live Logs</h5>
+                <div>
+                    <button class="btn btn-sm btn-secondary" id="pauseLogsButton">Pause</button>
+                    <button class="btn btn-sm btn-danger" id="clearLogsButton">Clear</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="logContainer" class="bg-dark text-light p-3" style="height: 500px; overflow-y: auto; font-family: monospace;">
+                    {{range .Logs}}
+                        <div class="log-entry">
+                            <span class="log-timestamp">[{{.Timestamp.Format "2006-01-02 15:04:05"}}]</span>
+                            {{if eq .Level 0}}
+                                <span class="log-level text-info">[DEBUG]</span>
+                            {{else if eq .Level 1}}
+                                <span class="log-level text-light">[INFO]</span>
+                            {{else if eq .Level 2}}
+                                <span class="log-level text-warning">[WARN]</span>
+                            {{else if eq .Level 3}}
+                                <span class="log-level text-danger">[ERROR]</span>
+                            {{else if eq .Level 4}}
+                                <span class="log-level text-danger fw-bold">[FATAL]</span>
+                            {{end}}
+                            <span class="log-message">{{.Message}}</span>
+                        </div>
+                    {{end}}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const logContainer = document.getElementById('logContainer');
+        const pauseButton = document.getElementById('pauseLogsButton');
+        const clearButton = document.getElementById('clearLogsButton');
+        let isPaused = false;
+        let ws;
+
+        // Auto-scroll to bottom
+        logContainer.scrollTop = logContainer.scrollHeight;
+
+        // Connect to WebSocket for live logs
+        function connectWebSocket() {
+            // Use secure WebSocket if page is loaded over HTTPS
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/logs`;
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = function() {
+                console.log('WebSocket connected');
+                addSystemMessage('Connected to log stream');
+            };
+            
+            ws.onmessage = function(event) {
+                if (isPaused) return;
+                
+                const log = JSON.parse(event.data);
+                addLogEntry(log);
+            };
+            
+            ws.onclose = function() {
+                console.log('WebSocket disconnected');
+                addSystemMessage('Disconnected from log stream. Reconnecting in 5 seconds...');
+                
+                // Try to reconnect after 5 seconds
+                setTimeout(connectWebSocket, 5000);
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                addSystemMessage('Error connecting to log stream');
+            };
+        }
+        
+        // Add a log entry to the container
+        function addLogEntry(log) {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            
+            const timestamp = new Date(log.timestamp);
+            const formattedTime = timestamp.toISOString().replace('T', ' ').substr(0, 19);
+            
+            let levelClass = 'text-light';
+            let levelText = '[INFO]';
+            
+            switch(log.level) {
+                case 0:
+                    levelClass = 'text-info';
+                    levelText = '[DEBUG]';
+                    break;
+                case 1:
+                    levelClass = 'text-light';
+                    levelText = '[INFO]';
+                    break;
+                case 2:
+                    levelClass = 'text-warning';
+                    levelText = '[WARN]';
+                    break;
+                case 3:
+                    levelClass = 'text-danger';
+                    levelText = '[ERROR]';
+                    break;
+                case 4:
+                    levelClass = 'text-danger fw-bold';
+                    levelText = '[FATAL]';
+                    break;
+            }
+            
+            entry.innerHTML = `
+                <span class="log-timestamp">[${formattedTime}]</span>
+                <span class="log-level ${levelClass}">${levelText}</span>
+                <span class="log-message">${log.message}</span>
+            `;
+            
+            logContainer.appendChild(entry);
+            
+            // Auto-scroll if we're at the bottom
+            if (logContainer.scrollTop + logContainer.clientHeight >= logContainer.scrollHeight - 50) {
+                logContainer.scrollTop = logContainer.scrollHeight;
+            }
+        }
+        
+        // Add a system message (not from the server)
+        function addSystemMessage(message) {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            
+            const now = new Date();
+            const formattedTime = now.toISOString().replace('T', ' ').substr(0, 19);
+            
+            entry.innerHTML = `
+                <span class="log-timestamp">[${formattedTime}]</span>
+                <span class="log-level text-secondary">[SYSTEM]</span>
+                <span class="log-message">${message}</span>
+            `;
+            
+            logContainer.appendChild(entry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+        
+        // Toggle pause/resume
+        pauseButton.addEventListener('click', function() {
+            isPaused = !isPaused;
+            pauseButton.textContent = isPaused ? 'Resume' : 'Pause';
+            pauseButton.className = isPaused ? 'btn btn-sm btn-success' : 'btn btn-sm btn-secondary';
+            
+            if (isPaused) {
+                addSystemMessage('Log stream paused');
+            } else {
+                addSystemMessage('Log stream resumed');
+            }
+        });
+        
+        // Clear logs
+        clearButton.addEventListener('click', function() {
+            logContainer.innerHTML = '';
+            addSystemMessage('Logs cleared');
+        });
+        
+        // Connect to WebSocket
+        connectWebSocket();
+    });
+</script>
+
+<style>
+    .log-entry {
+        margin-bottom: 2px;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+    
+    .log-timestamp {
+        color: #aaa;
+        margin-right: 5px;
+    }
+    
+    .log-level {
+        margin-right: 5px;
+    }
+</style>
+{{end}}

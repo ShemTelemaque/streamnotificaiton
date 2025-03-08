@@ -1,0 +1,189 @@
+{{define "content"}}
+<div class="row">
+    <div class="col-md-12">
+        <h1 class="mb-4">Manage Streamers</h1>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">Monitored Streamers</h5>
+                <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addStreamerModal">
+                    Add Streamer
+                </button>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Username</th>
+                                <th>Display Name</th>
+                                <th>Status</th>
+                                <th>Last Stream</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {{if .Streamers}}
+                                {{range .Streamers}}
+                                    <tr>
+                                        <td>{{.Username}}</td>
+                                        <td>{{.DisplayName}}</td>
+                                        <td>
+                                            {{if .IsLive}}
+                                                <span class="badge bg-success">Live</span>
+                                            {{else}}
+                                                <span class="badge bg-secondary">Offline</span>
+                                            {{end}}
+                                        </td>
+                                        <td>
+                                            {{if .LastStreamStart}}
+                                                {{.LastStreamStart.Format "2006-01-02 15:04:05"}}
+                                            {{else}}
+                                                Never
+                                            {{end}}
+                                        </td>
+                                        <td>
+                                            <button class="btn btn-danger btn-sm delete-streamer" data-id="{{.ID}}" data-name="{{.DisplayName}}">
+                                                Remove
+                                            </button>
+                                        </td>
+                                    </tr>
+                                {{end}}
+                            {{else}}
+                                <tr>
+                                    <td colspan="5" class="text-center">No streamers added yet</td>
+                                </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Information</h5>
+            </div>
+            <div class="card-body">
+                <p>Add Twitch streamers to monitor their live status. When a streamer goes live, notifications will be sent to the configured destinations.</p>
+                <p>To add a streamer, click the "Add Streamer" button and enter their Twitch username.</p>
+                <p>To remove a streamer from monitoring, click the "Remove" button next to their name.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Add Streamer Modal -->
+<div class="modal fade" id="addStreamerModal" tabindex="-1" aria-labelledby="addStreamerModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="addStreamerModalLabel">Add Streamer</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="addStreamerForm">
+                    <div class="mb-3">
+                        <label for="username" class="form-label">Twitch Username</label>
+                        <input type="text" class="form-control" id="username" name="username" required>
+                    </div>
+                </form>
+                <div id="addStreamerError" class="alert alert-danger d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="addStreamerButton">Add Streamer</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteStreamerModal" tabindex="-1" aria-labelledby="deleteStreamerModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="deleteStreamerModalLabel">Confirm Deletion</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to remove <span id="deleteStreamerName"></span> from monitoring?</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteStreamer">Remove</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Add streamer
+        document.getElementById('addStreamerButton').addEventListener('click', function() {
+            const username = document.getElementById('username').value.trim();
+            if (!username) return;
+            
+            const errorDiv = document.getElementById('addStreamerError');
+            errorDiv.classList.add('d-none');
+            
+            fetch('/api/streamers', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ username: username })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.text().then(text => { throw new Error(text) });
+                }
+                return response.json();
+            })
+            .then(data => {
+                window.location.reload();
+            })
+            .catch(error => {
+                errorDiv.textContent = 'Error: ' + error.message;
+                errorDiv.classList.remove('d-none');
+            });
+        });
+        
+        // Delete streamer
+        const deleteButtons = document.querySelectorAll('.delete-streamer');
+        deleteButtons.forEach(button => {
+            button.addEventListener('click', function() {
+                const id = this.getAttribute('data-id');
+                const name = this.getAttribute('data-name');
+                
+                document.getElementById('deleteStreamerName').textContent = name;
+                
+                const modal = new bootstrap.Modal(document.getElementById('deleteStreamerModal'));
+                modal.show();
+                
+                document.getElementById('confirmDeleteStreamer').onclick = function() {
+                    fetch(`/api/streamers/${id}`, {
+                        method: 'DELETE'
+                    })
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('Failed to delete streamer');
+                        }
+                        window.location.reload();
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        alert('Failed to delete streamer: ' + error.message);
+                    });
+                };
+            });
+        });
+    });
+</script>
+{{end}}
