@@ -70,3 +70,4 @@ debug
 # Local configuration files that might contain sensitive data
 config.local.yaml
 config.dev.yaml
+.env

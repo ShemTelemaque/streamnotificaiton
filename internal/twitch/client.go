@@ -10,35 +10,41 @@ import (
 
 	"github.com/drmaq/streamnotification/internal/config"
 	"github.com/drmaq/streamnotification/internal/db"
+	"github.com/drmaq/streamnotification/internal/discord"
 	"github.com/drmaq/streamnotification/internal/errors"
 	"github.com/drmaq/streamnotification/internal/logger"
 	"github.com/drmaq/streamnotification/internal/models"
+	"github.com/drmaq/streamnotification/internal/twitter"
 )
 
 const (
 	twitchAPIBaseURL = "https://api.twitch.tv/helix"
-	twitchAuthURL   = "https://id.twitch.tv/oauth2/token"
-	monitorInterval = 60 * time.Second // Check every minute
+	twitchAuthURL    = "https://id.twitch.tv/oauth2/token"
+	monitorInterval  = 60 * time.Second // Check every minute
 )
 
 // Client represents a Twitch API client
 type Client struct {
-	clientID     string
-	clientSecret string
-	accessToken  string
-	tokenExpiry  time.Time
-	httpClient   *http.Client
-	logger       *logger.Logger
-	mu           sync.Mutex
+	clientID      string
+	clientSecret  string
+	accessToken   string
+	tokenExpiry   time.Time
+	httpClient    *http.Client
+	logger        *logger.Logger
+	discordClient *discord.Client
+	twitterClient *twitter.Client
+	mu            sync.Mutex
 }
 
 // NewClient creates a new Twitch API client
-func NewClient(cfg *config.Config, logger *logger.Logger) (*Client, error) {
+func NewClient(cfg *config.Config, logger *logger.Logger, discordClient *discord.Client, twitterClient *twitter.Client) (*Client, error) {
 	client := &Client{
-		clientID:     cfg.TwitchClientID,
-		clientSecret: cfg.TwitchClientSecret,
-		httpClient:   &http.Client{Timeout: 10 * time.Second},
-		logger:       logger,
+		clientID:      cfg.TwitchClientID,
+		clientSecret:  cfg.TwitchClientSecret,
+		httpClient:    &http.Client{Timeout: 10 * time.Second},
+		logger:        logger,
+		discordClient: discordClient,
+		twitterClient: twitterClient,
 	}
 
 	// Get initial access token
@@ -242,12 +248,11 @@ func (c *Client) GetStreamStatus(usernames []string) (map[string]*models.StreamE
 			liveStreamers[stream.UserLogin] = &models.StreamEvent{
 				Username:     stream.UserLogin,
 				DisplayName:  stream.UserName,
-				EventType:    "live",
 				StreamTitle:  stream.Title,
 				GameName:     stream.GameName,
-				ThumbnailURL: stream.ThumbnailURL,
 				ViewerCount:  stream.ViewerCount,
 				StartedAt:    stream.StartedAt,
+				ThumbnailURL: stream.ThumbnailURL,
 			}
 		}
 	}
@@ -262,6 +267,11 @@ func (c *Client) StartMonitoring(ctx context.Context, database *db.Database) {
 	ticker := time.NewTicker(monitorInterval)
 	defer ticker.Stop()
 
+	// Initial check
+	if err := c.checkStreamers(database); err != nil {
+		c.logger.Error("Failed to check streamers: %v", err)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -275,20 +285,19 @@ func (c *Client) StartMonitoring(ctx context.Context, database *db.Database) {
 	}
 }
 
-// checkStreamers checks the live status of all streamers
+// checkStreamers checks the live status of all monitored streamers
 func (c *Client) checkStreamers(database *db.Database) error {
-	// Get all streamers from database
+	// Get all monitored streamers
 	streamers, err := database.GetStreamers()
 	if err != nil {
 		return errors.NewInternalError("Failed to get streamers from database", err)
 	}
 
-	// If no streamers, nothing to do
 	if len(streamers) == 0 {
 		return nil
 	}
 
-	// Get usernames
+	// Create list of usernames
 	usernames := make([]string, len(streamers))
 	usernameToID := make(map[string]int)
 	for i, streamer := range streamers {
@@ -300,6 +309,12 @@ func (c *Client) checkStreamers(database *db.Database) error {
 	liveStreamers, err := c.GetStreamStatus(usernames)
 	if err != nil {
 		return errors.NewAPIError("Failed to get stream status", err)
+	}
+
+	// Get notification settings
+	notifications, err := database.GetNotificationSettings()
+	if err != nil {
+		return errors.NewInternalError("Failed to get notification settings", err)
 	}
 
 	// Update streamers
@@ -314,23 +329,59 @@ func (c *Client) checkStreamers(database *db.Database) error {
 
 			// If went live, update last stream start and send notification
 			if isLive && !oldStatus {
-				streamers[i].LastStreamStart = &liveEvent.StartedAt
-				streamers[i].LastNotificationSent = nil
+				// Update last stream start time
+				now := time.Now()
+				streamers[i].LastStreamStart = &now
+				streamers[i].LastNotificationSent = &now
 
-				// Send notification
-				c.logger.Info("%s went live playing %s: %s", 
-					streamers[i].DisplayName, liveEvent.GameName, liveEvent.StreamTitle)
-				
-				// TODO: Send notifications to Discord and Twitter
-				// This would be handled by notification services
-			} else if !isLive && oldStatus {
-				// Went offline
-				c.logger.Info("%s went offline", streamers[i].DisplayName)
-			}
+				// Update streamer in database
+				if err := database.UpdateStreamer(&streamers[i]); err != nil {
+					c.logger.Error("Failed to update streamer: %v", err)
+					continue
+				}
 
-			// Update streamer in database
-			if err := database.UpdateStreamer(&streamers[i]); err != nil {
-				return errors.NewInternalError("Failed to update streamer in database", err)
+				// Set streamer ID in the event
+				liveEvent.StreamerID = streamers[i].ID
+
+				// Send notifications based on settings
+				c.logger.Info("%s went live playing %s", streamers[i].DisplayName, liveEvent.GameName)
+
+				// Track notification errors
+				var notificationErrors []error
+
+				// Send notifications to all enabled destinations
+				for _, notification := range notifications {
+					if !notification.Enabled {
+						continue
+					}
+
+					switch notification.Type {
+					case models.NotificationTypeDiscord:
+						// Send Discord notification
+						if c.discordClient != nil {
+							if err := c.discordClient.SendNotification(notification.Destination, liveEvent); err != nil {
+								c.logger.Error("Failed to send Discord notification: %v", err)
+								notificationErrors = append(notificationErrors, err)
+							}
+						}
+
+					case models.NotificationTypeTwitter:
+						// Send Twitter notification
+						if c.twitterClient != nil {
+							if err := c.twitterClient.SendNotification(liveEvent); err != nil {
+								c.logger.Error("Failed to send Twitter notification: %v", err)
+								notificationErrors = append(notificationErrors, err)
+							}
+						}
+					}
+				}
+
+				// Log notification status
+				if len(notificationErrors) > 0 {
+					c.logger.Warn("Sent notifications for %s with %d errors", streamers[i].DisplayName, len(notificationErrors))
+				} else {
+					c.logger.Info("Successfully sent all notifications for %s", streamers[i].DisplayName)
+				}
 			}
 		}
 	}

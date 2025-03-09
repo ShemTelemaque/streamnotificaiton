@@ -3,19 +3,20 @@ package main
 import (
 	"context"
 	"fmt"
-
-	//"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/drmaq/streamnotification/internal/api"
 	"github.com/drmaq/streamnotification/internal/config"
 	"github.com/drmaq/streamnotification/internal/db"
+	"github.com/drmaq/streamnotification/internal/discord"
+	"github.com/drmaq/streamnotification/internal/frontend"
 	"github.com/drmaq/streamnotification/internal/logger"
-	"github.com/drmaq/streamnotification/internal/server"
 	"github.com/drmaq/streamnotification/internal/twitch"
+	"github.com/drmaq/streamnotification/internal/twitter"
 )
 
 func main() {
@@ -41,17 +42,45 @@ func main() {
 		logger.Fatal("Failed to run database migrations: %v", err)
 	}
 
+	// Initialize Discord client
+	discordClient := discord.NewClient(logger)
+
+	// Initialize Twitter client
+	twitterClient := twitter.NewClient(
+		logger,
+		cfg.TwitterAPIKey,
+		cfg.TwitterAPISecret,
+		cfg.TwitterAccessToken,
+		cfg.TwitterAccessSecret,
+	)
+
 	// Initialize Twitch client
-	twitchClient, err := twitch.NewClient(cfg, logger)
+	twitchClient, err := twitch.NewClient(cfg, logger, discordClient, twitterClient)
 	if err != nil {
 		logger.Fatal("Failed to initialize Twitch client: %v", err)
 	}
 
+	// Create API router
+	apiRouter := api.NewRouter(cfg, logger, database, twitchClient)
+
+	// Create frontend router with API base URL
+	apiBaseURL := fmt.Sprintf("http://localhost:%s", cfg.Port)
+	frontendRouter := frontend.NewRouter(cfg, logger, apiBaseURL)
+
+	// Create a main router that combines API and frontend routes
+	mainRouter := http.NewServeMux()
+
+	// Mount API routes
+	mainRouter.Handle("/api/", apiRouter.Router)
+	mainRouter.Handle("/ws/", apiRouter.Router)
+
+	// Mount frontend routes (everything else)
+	mainRouter.Handle("/", frontendRouter.Router)
+
 	// Start the HTTP server
-	srv := server.NewServer(cfg, logger, database, twitchClient)
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%s", cfg.Port),
-		Handler: srv.Router,
+		Handler: mainRouter,
 	}
 
 	// Start server in a goroutine

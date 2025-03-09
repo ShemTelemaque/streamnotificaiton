@@ -4,15 +4,14 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
-	"runtime"
 
 	"github.com/drmaq/streamnotification/internal/config"
 	"github.com/drmaq/streamnotification/internal/errors"
 	"github.com/drmaq/streamnotification/internal/models"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
+	"github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/lib/pq"
-	//"github.com/golang-migrate/migrate/v4/source/file"
 )
 
 // Database represents a database connection
@@ -53,10 +52,15 @@ func (d *Database) Close() error {
 
 // Migrate runs database migrations
 func (d *Database) Migrate() error {
-	// Get the path to the migrations directory
-	_, b, _, _ := runtime.Caller(0)
-	basepath := filepath.Dir(b)
-	migrationsPath := filepath.Join(basepath, "../..", "migrations")
+	// Use relative path for migrations
+	migrationsPath := "migrations"
+
+	// Register the file source driver
+	source, err := (&file.File{}).Open(fmt.Sprintf("file://./%s", filepath.ToSlash(filepath.Clean(migrationsPath))))
+	if err != nil {
+		return errors.NewDatabaseError("Failed to create file source driver", err)
+	}
+	defer source.Close()
 
 	// Create a new migrate instance
 	driver, err := postgres.WithInstance(d.db, &postgres.Config{})
@@ -65,7 +69,7 @@ func (d *Database) Migrate() error {
 	}
 
 	// Create a new migrate instance
-	sourceURL := fmt.Sprintf("file://%s", migrationsPath)
+	sourceURL := fmt.Sprintf("file://./%s", filepath.ToSlash(filepath.Clean(migrationsPath)))
 	m, err := migrate.NewWithDatabaseInstance(sourceURL, "postgres", driver)
 	if err != nil {
 		return errors.NewDatabaseError("Failed to create migration instance", err)

@@ -1,0 +1,59 @@
+/* General styles */
+body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Navbar styles */
+.navbar {
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.navbar-brand {
+    font-weight: bold;
+}
+
+/* Card styles */
+.card {
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    transition: transform 0.2s;
+}
+
+.card:hover {
+    transform: translateY(-2px);
+}
+
+/* Footer styles */
+.footer {
+    margin-top: auto;
+    background-color: #f8f9fa;
+}
+
+/* Dashboard stats */
+.display-4 {
+    font-size: 2.5rem;
+    font-weight: bold;
+}
+
+/* Table styles */
+.table th {
+    background-color: #f8f9fa;
+}
+
+/* Status indicators */
+.status-indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 5px;
+}
+
+.status-live {
+    background-color: #28a745;
+}
+
+.status-offline {
+    background-color: #dc3545;
+}
